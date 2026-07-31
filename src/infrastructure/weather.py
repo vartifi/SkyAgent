@@ -5,26 +5,34 @@ from typing import Any
 
 import httpx
 
-from src.domain.forecast import CurrentForecast, DailyForecast
+from src.domain.weather import (
+    CityForecast,
+    CurrentForecast,
+    DailyForecast,
+    WeatherClient,
+)
 
 
 BASE_URL = "https://api.open-meteo.com/v1/forecast"
+GEOCODING_BASE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 
 class WeatherApiError(RuntimeError):
     """Raised when the weather provider cannot return a usable forecast."""
 
 
-class OpenMeteoWeatherClient:
+class OpenMeteoWeatherClient(WeatherClient):
 
     def __init__(
         self,
         *,
         base_url: str = BASE_URL,
+        geocoding_base_url: str = GEOCODING_BASE_URL,
         timeout: float = 10.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url
+        self._geocoding_base_url = geocoding_base_url
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
@@ -38,27 +46,36 @@ class OpenMeteoWeatherClient:
     async def __aexit__(self, *_: object) -> None:
         await self.close()
 
-    async def get_forecast(
+    async def get_city_forecast(
         self,
         *,
-        latitude: float,
-        longitude: float,
-        forecast_days: int = 3,
-        timezone: str = "auto",
-    ) -> tuple[CurrentForecast, list[DailyForecast]]:
-        current = await self.get_current_forecast(
-            latitude=latitude,
-            longitude=longitude,
-            timezone=timezone,
-        )
-        daily = await self.get_daily_forecast(
-            latitude=latitude,
-            longitude=longitude,
-            forecast_days=forecast_days,
-            timezone=timezone,
-        )
+        city: str,
+        language: str = "en",
+    ) -> CityForecast:
+        city = city.strip()
+        if not city:
+            raise ValueError("city must not be empty")
 
-        return current, daily
+        params = {
+            "name": city,
+            "count": 1,
+            "language": language,
+            "format": "json",
+        }
+        payload = await self._get_payload(
+            self._geocoding_base_url,
+            params,
+        )
+        city_forecast = payload.get("results")
+
+        if not isinstance(city_forecast, list) or not city_forecast:
+            raise WeatherApiError(f"Location not found: {city}")
+
+        first = city_forecast[0]
+        if not isinstance(first, Mapping):
+            raise WeatherApiError("Geocoding API returned an unexpected location")
+
+        return self._parse_city_forecast(first)
 
     async def get_current_forecast(
         self,
@@ -86,7 +103,7 @@ class OpenMeteoWeatherClient:
             "temperature_unit": "celsius",
         }
 
-        payload = await self._get_payload(params)
+        payload = await self._get_payload(self._base_url, params)
         current = payload.get("current")
 
         if not isinstance(current, Mapping):
@@ -123,7 +140,7 @@ class OpenMeteoWeatherClient:
             "precipitation_unit": "mm",
         }
 
-        payload = await self._get_payload(params)
+        payload = await self._get_payload(self._base_url, params)
         daily = payload.get("daily")
 
         if not isinstance(daily, Mapping):
@@ -131,9 +148,13 @@ class OpenMeteoWeatherClient:
 
         return self._parse_daily(daily)
 
-    async def _get_payload(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
+    async def _get_payload(
+        self,
+        url: str,
+        params: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         try:
-            response = await self._client.get(self._base_url, params=params)
+            response = await self._client.get(url, params=params)
             response.raise_for_status()
             payload = response.json()
         except httpx.HTTPStatusError as exc:
@@ -205,9 +226,20 @@ class OpenMeteoWeatherClient:
 
         return forecast
 
+    def _parse_city_forecast(self, location: Mapping[str, Any]) -> CityForecast:
+        return CityForecast(
+            name=str(location["name"]),
+            latitude=float(location["latitude"]),
+            longitude=float(location["longitude"]),
+        )
+
 
 def describe_weather_code(code: int) -> str:
     return _WEATHER_CODE_DESCRIPTIONS.get(code, f"unknown weather code {code}")
+
+
+def create_weather_client() -> WeatherClient:
+    return OpenMeteoWeatherClient()
 
 
 _WEATHER_CODE_DESCRIPTIONS = {

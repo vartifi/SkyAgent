@@ -6,10 +6,11 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from src.domain.forecast import CurrentForecast, DailyForecast
+from src.domain.weather import CityForecast, CurrentForecast, DailyForecast
 from src.infrastructure.weather import (
     OpenMeteoWeatherClient,
     WeatherApiError,
+    create_weather_client,
     describe_weather_code,
 )
 
@@ -59,22 +60,25 @@ def test_get_daily_forecast() -> None:
     assert daily[1].precipitation_sum == 0.4
 
 
-def test_get_forecast_combines_current_and_daily() -> None:
-    calls: list[httpx.QueryParams] = []
+def test_get_city_forecast() -> None:
+    request_params: httpx.QueryParams | None = None
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.params)
-        if "current" in request.url.params:
-            return httpx.Response(200, json=_current_payload())
-        return httpx.Response(200, json=_daily_payload())
+        nonlocal request_params
+        request_params = request.url.params
+        return httpx.Response(200, json=_geocoding_payload())
 
-    current, daily = asyncio.run(_get_forecast(handler))
+    location = asyncio.run(_get_city_forecast(handler))
 
-    assert len(calls) == 2
-    assert "current" in calls[0]
-    assert "daily" in calls[1]
-    assert current.description == "mainly clear"
-    assert len(daily) == 2
+    assert request_params is not None
+    assert request_params["name"] == "Москва"
+    assert request_params["count"] == "1"
+    assert request_params["language"] == "ru"
+    assert location == CityForecast(
+        name="Moscow",
+        latitude=55.7522,
+        longitude=37.6156
+    )
 
 
 def test_api_error_raises_weather_api_error() -> None:
@@ -115,10 +119,19 @@ def test_describe_weather_code() -> None:
     assert describe_weather_code(12345) == "unknown weather code 12345"
 
 
+def test_create_weather_client_returns_open_meteo_client() -> None:
+    assert asyncio.run(_factory_client_is_open_meteo()) is True
+
+
 async def _get_current(handler: Handler) -> CurrentForecast:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = OpenMeteoWeatherClient(client=http)
         return await client.get_current_forecast(latitude=55.75, longitude=37.61)
+
+
+async def _factory_client_is_open_meteo() -> bool:
+    async with create_weather_client() as client:
+        return isinstance(client, OpenMeteoWeatherClient)
 
 
 async def _get_daily(
@@ -135,16 +148,10 @@ async def _get_daily(
         )
 
 
-async def _get_forecast(
-    handler: Handler,
-) -> tuple[CurrentForecast, list[DailyForecast]]:
+async def _get_city_forecast(handler: Handler) -> CityForecast:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = OpenMeteoWeatherClient(client=http)
-        return await client.get_forecast(
-            latitude=55.75,
-            longitude=37.61,
-            forecast_days=2,
-        )
+        return await client.get_city_forecast(city="Москва", language="ru")
 
 
 def _current_payload() -> dict:
@@ -170,4 +177,16 @@ def _daily_payload() -> dict:
             "precipitation_sum": [0.0, 0.4],
             "wind_speed_10m_max": [3.9, 3.4],
         },
+    }
+
+
+def _geocoding_payload() -> dict:
+    return {
+        "results": [
+            {
+                "name": "Moscow",
+                "latitude": 55.7522,
+                "longitude": 37.6156
+            },
+        ],
     }
