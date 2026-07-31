@@ -1,2 +1,5 @@
 httpx==0.28.1
+langchain>=1.0.0,<2.0.0
+langchain-openai>=1.0.0,<2.0.0
+python-dotenv==1.2.1
 pytest==8.3.4
