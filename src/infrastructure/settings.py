@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 
 from src.domain.agent import AgentSettings
+from src.domain.telegram import TelegramSettings
 from src.domain.weather import WeatherSettings
 
 
@@ -40,6 +41,19 @@ def weather_settings_from_env(
     )
 
 
+def telegram_settings_from_env(
+    *,
+    dotenv_path: str | os.PathLike[str] | None = None,
+) -> TelegramSettings:
+    load_dotenv(dotenv_path=dotenv_path or ENV_FILE, override=True)
+
+    return TelegramSettings(
+        bot_token=_required_env("TELEGRAM_BOT_TOKEN"),
+        poll_timeout=int(os.getenv("TELEGRAM_POLL_TIMEOUT", "30")),
+        request_timeout=float(os.getenv("TELEGRAM_REQUEST_TIMEOUT", "35")),
+    )
+
+
 def load_project_env() -> None:
     load_dotenv(dotenv_path=ENV_FILE, override=True)
 
@@ -49,4 +63,3 @@ def _required_env(name: str) -> str:
     if value is None or not value.strip():
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
-
